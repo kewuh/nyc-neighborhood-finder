@@ -3,161 +3,252 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NYC Neighborhood Breakdown</title>
+    <title>NYC Neighborhood Finder</title>
     
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="NYC Hoods">
-    <link rel="apple-touch-icon" href="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b5/Map_of_New_York_City.svg/1024px-Map_of_New_York_City.svg.png">
+    <meta name="apple-mobile-web-app-title" content="NYC Hood">
 
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+    <!-- pbf + vector-tile bundled for browser -->
+    <script src="vt-bundle.js"></script>
 
     <style>
         body {
             -webkit-touch-callout: none;
             -webkit-user-select: none;
             user-select: none;
-            background-color: #f8fafc;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
         }
-        .ripple {
-            animation: pulse 2s infinite;
-        }
+        .ripple { animation: pulse 2s infinite; }
         @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
-            70% { box-shadow: 0 0 0 20px rgba(59, 130, 246, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+            0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.6); }
+            70% { box-shadow: 0 0 0 24px rgba(99, 102, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
         }
-        .bar-fill {
-            transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
-        }
+        .bar-fill { transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+        .fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .result-row { opacity: 0; }
     </style>
 </head>
-<body class="h-screen w-screen flex flex-col items-center justify-start pt-12 px-6 text-slate-800 overflow-hidden">
+<body class="flex flex-col items-center justify-start pt-14 px-5 text-white overflow-x-hidden">
 
-    <div class="max-w-md w-full flex flex-col items-center text-center space-y-6">
+    <div class="max-w-md w-full flex flex-col items-center text-center space-y-5">
         
         <div>
-            <h1 class="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">What's this called?</h1>
-            <p class="text-sm text-slate-500">A geometric simulation of neighborhood ambiguity.</p>
+            <h1 class="text-3xl font-extrabold tracking-tight mb-1">What neighborhood<br>am I in?</h1>
+            <p class="text-sm text-slate-400">Real data from 37,000+ NYT survey responses.</p>
         </div>
 
-        <button id="locate-btn" class="relative group w-24 h-24 mt-4 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-xl transition-transform active:scale-95 focus:outline-none">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <button id="locate-btn" class="relative w-20 h-20 mt-3 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-2xl transition-all active:scale-90 focus:outline-none hover:bg-indigo-500">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-9 w-9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.243-4.243a8 8 0 1111.314 0z" />
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
         </button>
-        <p id="status-text" class="text-sm text-slate-400 font-medium h-4 mt-2">Ready</p>
+        <p id="status-text" class="text-sm text-slate-400 font-medium h-5">Tap to find out</p>
 
-        <!-- Results List -->
-        <div id="results-container" class="w-full flex flex-col space-y-4 w-full mt-6 opacity-0 transition-opacity duration-500">
-            <!-- Items injected by JS -->
-        </div>
+        <div id="results-container" class="w-full flex flex-col space-y-3 mt-4"></div>
 
+        <p id="source-note" class="text-xs text-slate-600 mt-6 max-w-xs hidden">
+            Source: New York Times "Extremely Detailed Map of NYC Neighborhoods" (2023), crowdsourced from 37,000+ residents.
+        </p>
     </div>
 
     <script>
-        let geojsonData = null;
-        const btn = document.getElementById('locate-btn');
-        const statusText = document.getElementById('status-text');
-        const resultsContainer = document.getElementById('results-container');
+    const MAPBOX_TOKEN = "pk.eyJ1Ijoibnl0Z3JhcGhpY3MiLCJhIjoiY2w3aHR3NGM4MDE0ZjNvbnZ3ajNleDFoZyJ9.AeTx2XLoUT692pKRpz6Dng";
+    const TILESET = "nytgraphics.blocks-10292326";
 
-        fetch('neighborhoods.json')
-            .then(res => res.json())
-            .then(data => {
-                geojsonData = data;
-                console.log("Loaded data");
-            })
-            .catch(err => {
-                statusText.innerText = "Error loading data.";
-                statusText.classList.add("text-red-500");
-            });
+    let nytLookup = null;
 
-        btn.addEventListener('click', () => {
-            if (!geojsonData) return;
-            if (!navigator.geolocation) return;
+    // Load the neighborhood name lookup
+    fetch('nyt_lookup.json')
+        .then(r => r.json())
+        .then(data => { nytLookup = data; console.log("Loaded", Object.keys(data).length, "neighborhoods"); })
+        .catch(e => { console.error("Lookup load error:", e); });
 
-            btn.classList.add('ripple', 'bg-blue-500');
-            statusText.innerText = "Locating...";
-            resultsContainer.style.opacity = '0';
+    const btn = document.getElementById('locate-btn');
+    const statusText = document.getElementById('status-text');
+    const resultsContainer = document.getElementById('results-container');
+    const sourceNote = document.getElementById('source-note');
 
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    findNeighborhood(position.coords.longitude, position.coords.latitude);
-                },
-                (error) => {
-                    btn.classList.remove('ripple', 'bg-blue-500');
-                    statusText.innerText = "Location access denied.";
-                    statusText.classList.add("text-red-500");
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-            );
+    btn.addEventListener('click', () => {
+        if (!nytLookup) { statusText.innerText = "Loading data..."; return; }
+        if (!navigator.geolocation) { statusText.innerText = "Geolocation not supported."; return; }
+
+        btn.classList.add('ripple');
+        statusText.innerText = "Finding your location…";
+        resultsContainer.innerHTML = '';
+        sourceNote.classList.add('hidden');
+
+        navigator.geolocation.getCurrentPosition(
+            pos => queryNYT(pos.coords.latitude, pos.coords.longitude),
+            err => {
+                btn.classList.remove('ripple');
+                statusText.innerText = err.code === 1 ? "Location access denied." : "Could not get location.";
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    });
+
+    function latLngToTile(lat, lng, zoom) {
+        const n = Math.pow(2, zoom);
+        return {
+            x: Math.floor((lng + 180) / 360 * n),
+            y: Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n),
+            z: zoom
+        };
+    }
+
+    function pointInPolygon(px, py, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const xi = ring[i].x, yi = ring[i].y;
+            const xj = ring[j].x, yj = ring[j].y;
+            if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+                inside = !inside;
+        }
+        return inside;
+    }
+
+    async function queryNYT(lat, lng) {
+        const zoom = 13;
+        const tile = latLngToTile(lat, lng, zoom);
+        const url = `https://api.mapbox.com/v4/${TILESET}/${tile.z}/${tile.x}/${tile.y}.vector.pbf?access_token=${MAPBOX_TOKEN}`;
+
+        statusText.innerText = "Querying NYT data…";
+
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`Tile fetch failed: ${resp.status}`);
+
+            const arrayBuf = await resp.arrayBuffer();
+            let data = new Uint8Array(arrayBuf);
+
+            // Decompress if gzipped
+            if (data[0] === 0x1f && data[1] === 0x8b) {
+                const ds = new DecompressionStream('gzip');
+                const writer = ds.writable.getWriter();
+                const reader = ds.readable.getReader();
+                writer.write(data);
+                writer.close();
+                const chunks = [];
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                }
+                let totalLen = chunks.reduce((s, c) => s + c.length, 0);
+                data = new Uint8Array(totalLen);
+                let offset = 0;
+                for (const c of chunks) { data.set(c, offset); offset += c.length; }
+            }
+
+            // Decode vector tile
+            const pbf = new Pbf(data);
+            const vt = new VectorTile(pbf);
+
+            if (!vt.layers || !vt.layers.blocks) {
+                statusText.innerText = "No data for this location.";
+                btn.classList.remove('ripple');
+                return;
+            }
+
+            const layer = vt.layers.blocks;
+            const n = Math.pow(2, zoom);
+            const px = ((lng + 180) / 360 * n - tile.x) * layer.extent;
+            const py = ((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n - tile.y) * layer.extent;
+
+            let found = false;
+            for (let i = 0; i < layer.length; i++) {
+                const feature = layer.feature(i);
+                const geom = feature.loadGeometry();
+
+                for (const ring of geom) {
+                    if (pointInPolygon(px, py, ring)) {
+                        const props = feature.properties;
+                        const results = [];
+
+                        for (const [key, val] of Object.entries(props)) {
+                            if (key.startsWith('x') && key.length > 1 && key !== 'x0000') {
+                                const id = key.substring(1);
+                                if (id === '0000' || id === '9999') continue;
+                                const name = nytLookup[id] ? nytLookup[id].displayName : null;
+                                if (!name) continue;
+                                const pct = Math.round(val * 100);
+                                if (pct > 0) results.push({ name, pct });
+                            }
+                        }
+
+                        results.sort((a, b) => b.pct - a.pct);
+                        renderResults(results);
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+
+            if (!found) {
+                statusText.innerText = "You're not in a mapped NYC neighborhood.";
+            }
+
+        } catch (err) {
+            console.error(err);
+            statusText.innerText = "Error querying data.";
+        }
+
+        btn.classList.remove('ripple');
+    }
+
+    function renderResults(results) {
+        if (!results.length) {
+            statusText.innerText = "No neighborhood data for this spot.";
+            return;
+        }
+
+        statusText.innerText = '';
+
+        const colors = ['bg-indigo-500', 'bg-slate-500', 'bg-slate-600', 'bg-slate-600', 'bg-slate-700', 'bg-slate-700'];
+        let html = '';
+
+        results.forEach((r, i) => {
+            const isTop = i === 0;
+            const nameSize = isTop ? 'text-2xl font-black' : 'text-base font-semibold';
+            const pctSize = isTop ? 'text-2xl font-black' : 'text-base font-semibold';
+            const textColor = isTop ? 'text-white' : 'text-slate-300';
+            const barColor = colors[Math.min(i, colors.length - 1)];
+            const barHeight = isTop ? 'h-3' : 'h-2';
+            const delay = i * 120;
+
+            html += `
+            <div class="result-row flex flex-col text-left" style="animation-delay: ${delay}ms">
+                <div class="flex justify-between items-baseline mb-1">
+                    <span class="${nameSize} ${textColor} tracking-tight">${r.name}</span>
+                    <span class="${pctSize} ${textColor}">${r.pct}%</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full ${barHeight}">
+                    <div class="${barColor} ${barHeight} rounded-full bar-fill" style="width: 0%" data-width="${r.pct}%"></div>
+                </div>
+            </div>`;
         });
 
-        function findNeighborhood(lon, lat) {
-            const pt = turf.point([lon, lat]);
-            let distances = [];
+        resultsContainer.innerHTML = html;
+        sourceNote.classList.remove('hidden');
 
-            for (const feature of geojsonData.features) {
-                if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-                    const centroid = turf.centroid(feature);
-                    const dist = turf.distance(pt, centroid, {units: 'kilometers'});
-                    const isInside = turf.booleanPointInPolygon(pt, feature);
-                    distances.push({ name: feature.properties.name, dist: dist, isInside: isInside });
-                }
-            }
-
-            distances.sort((a, b) => a.dist - b.dist);
-            const top4 = distances.slice(0, 4);
-
-            let totalWeight = 0;
-            for (const t of top4) {
-                t.weight = 1 / Math.pow(t.dist, 4); // Steep dropoff for distance
-                if (t.isInside) t.weight *= 3; // Boost if technically inside the polygon
-                totalWeight += t.weight;
-            }
-
-            let resultsHTML = '';
-            
-            for (let i = 0; i < top4.length; i++) {
-                const t = top4[i];
-                const pct = Math.round((t.weight / totalWeight) * 100);
-                if (pct > 0) {
-                    const isTop = (i === 0);
-                    const color = isTop ? 'bg-blue-600' : 'bg-slate-300';
-                    const textColor = isTop ? 'text-slate-900 font-bold' : 'text-slate-600';
-                    const size = isTop ? 'text-2xl' : 'text-lg';
-                    
-                    resultsHTML += `
-                        <div class="flex flex-col text-left">
-                            <div class="flex justify-between items-baseline mb-1">
-                                <span class="${size} ${textColor} tracking-tight">${t.name}</span>
-                                <span class="${size} ${textColor}">${pct}%</span>
-                            </div>
-                            <div class="w-full bg-slate-100 rounded-full h-2.5">
-                                <div class="${color} h-2.5 rounded-full bar-fill" style="width: 0%" data-width="${pct}%"></div>
-                            </div>
-                        </div>
-                    `;
-                }
-            }
-
-            resultsContainer.innerHTML = resultsHTML;
-            resultsContainer.style.opacity = '1';
-            
-            // Animate bars
+        // Trigger animations
+        requestAnimationFrame(() => {
+            document.querySelectorAll('.result-row').forEach(row => row.classList.add('fade-in'));
             setTimeout(() => {
-                const bars = document.querySelectorAll('.bar-fill');
-                bars.forEach(bar => {
+                document.querySelectorAll('.bar-fill').forEach(bar => {
                     bar.style.width = bar.getAttribute('data-width');
                 });
-            }, 50);
-
-            btn.classList.remove('ripple', 'bg-blue-500');
-            statusText.innerText = "Found!";
-        }
+            }, 100);
+        });
+    }
     </script>
 </body>
 </html>
